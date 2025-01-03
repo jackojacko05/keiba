@@ -491,13 +491,22 @@ def main():
                 
                 if race_data:
                     if race_data['race_info']:
-                        race_data['race_info']['race_id'] = race_id
-                        race_infos.append(race_data['race_info'])
-                    
-                    if race_data['race_results']:
-                        for result in race_data['race_results']:
-                            result['race_id'] = race_id
-                        race_results.extend(race_data['race_results'])
+                        race_info = race_data['race_info']
+                        race_info['race_id'] = race_id
+                        race_infos.append(race_info)
+                        
+                        # レース結果にレース情報を追加
+                        if race_data['race_results']:
+                            for result in race_data['race_results']:
+                                result['race_id'] = race_id
+                                # レース情報をコピー
+                                for key in ['race_name', 'race_date', 'kaisai_kai', 'kaisai_place', 
+                                          'kaisai_nichime', 'track_type', 'track_direction', 
+                                          'track_inout', 'track_distance', 'weather', 
+                                          'track_condition', 'start_time', 'race_conditions']:
+                                    if key in race_info:
+                                        result[key] = race_info[key]
+                            race_results.extend(race_data['race_results'])
                 
                 # レース間に3秒待機
                 time.sleep(3)
