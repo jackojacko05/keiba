@@ -88,43 +88,48 @@ class NetkeibaRaceScraper:
         if data_intro:
             data_lines = [line.strip() for line in data_intro.text.split('\n') if line.strip()]
             for line in data_lines:
-                if '芝' in line and 'm' in line and '天候' in line:
+                # ダ右1000m / 天候 : 晴 / ダート : 良 / 発走 : 10:20 のような形式に対応
+                if ('芝' in line or 'ダ' in line) and 'm' in line and '天候' in line:
                     info_parts = line.split('/')
                     
                     # コース情報を分割
                     if len(info_parts) > 0:
                         course_info = info_parts[0].strip()
-                        # 例: "芝右 外2200m" → ["芝右", "外2200m"]
-                        course_parts = course_info.split()
-                        
-                        # 馬場の種類（芝/ダ）と回り（右/左/直線）を分離
-                        if len(course_parts) > 0:
-                            track_type = course_parts[0]
-                            race_info['track_type'] = '芝' if '芝' in track_type else 'ダ'
-                            race_info['track_direction'] = '右' if '右' in track_type else ('左' if '左' in track_type else '直線')
-                        
-                        # 内外とコース距離を分離
-                        if len(course_parts) > 1:
-                            distance_part = course_parts[1]
-                            # 内外の情報を抽出
-                            if '内' in distance_part:
-                                race_info['track_inout'] = '内'
-                                distance_part = distance_part.replace('内', '')
-                            elif '外' in distance_part:
-                                race_info['track_inout'] = '外'
-                                distance_part = distance_part.replace('外', '')
-                            else:
-                                race_info['track_inout'] = ''
+                        # 例: "ダ右1000m" → ["ダ右", "1000m"]
+                        if 'm' in course_info:
+                            track_part = ''
+                            direction_part = ''
+                            distance_part = ''
                             
-                            # 距離を抽出（mを除去）
-                            race_info['track_distance'] = distance_part.replace('m', '')
+                            # 馬場の種類（芝/ダ）を抽出
+                            if '芝' in course_info:
+                                race_info['track_type'] = '芝'
+                                track_part = '芝'
+                            elif 'ダ' in course_info:
+                                race_info['track_type'] = 'ダ'
+                                track_part = 'ダ'
+                            
+                            # 回り（右/左/直線）を抽出
+                            if '右' in course_info:
+                                race_info['track_direction'] = '右'
+                                direction_part = '右'
+                            elif '左' in course_info:
+                                race_info['track_direction'] = '左'
+                                direction_part = '左'
+                            else:
+                                race_info['track_direction'] = '直線'
+                            
+                            # 距離を抽出
+                            distance_str = course_info.replace(track_part, '').replace(direction_part, '').replace('m', '').strip()
+                            if distance_str.isdigit():
+                                race_info['track_distance'] = distance_str
                     
-                    # 天候、馬場状態、発走時刻
+                    # 天候、馬場状態、発走時刻を抽出
                     for part in info_parts:
                         part = part.strip()
                         if '天候' in part:
                             race_info['weather'] = part.split(':')[1].strip()
-                        elif '芝' in part and ':' in part:
+                        elif ('芝' in part or 'ダート' in part) and ':' in part:
                             race_info['track_condition'] = part.split(':')[1].strip()
                         elif '発走' in part:
                             time_parts = part.split(':')
@@ -354,23 +359,17 @@ class NetkeibaRaceScraper:
         
         return race_infos, race_results
 
-    def save_consolidated_csv(self, race_infos, race_results, output_dir, year, place_code):
+    def save_consolidated_csv(self, race_infos, race_results, output_dir):
         """
-        レース情報と結果を年+競馬場ごとのCSVファイルに保存
-        Args:
-            year: 対象年
-            place_code: 競馬場コード
+        レース情報と結果を1つのCSVファイルに保存
         """
         try:
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
             
-            # ファイル名の設定（例：race_info_2024_01.csv）
-            info_filename = f'race_info_{year}_{place_code}.csv'
-            result_filename = f'race_result_{year}_{place_code}.csv'
-            
-            info_path = os.path.join(output_dir, info_filename)
-            results_path = os.path.join(output_dir, result_filename)
+            # 固定のファイル名を使用
+            info_path = os.path.join(output_dir, 'race_info_consolidated.csv')
+            results_path = os.path.join(output_dir, 'race_result_consolidated.csv')
             
             # レース情報の保存
             if race_infos:
@@ -415,7 +414,7 @@ class NetkeibaRaceScraper:
                 print(f"Race results saved to {results_path}")
             
         except Exception as e:
-            print(f"Error saving CSV for year {year}, place {place_code}: {str(e)}")
+            print(f"Error saving CSV: {str(e)}")
 
     def get_race_ids_for_date(self, base_id):
         """
@@ -543,29 +542,49 @@ def main():
                                 # その日の全レースを追加（1R-12R）
                                 for race_num in range(1, 13):
                                     race_id = f"{base_race_id}{race_num:02d}"
-                                    place_race_ids.append(race_id)
-                                    print(f"Added race: {race_id}")
+                                    
+                                    # 未取得のレースのみ処理
+                                    if race_id not in existing_race_ids:
+                                        print(f"Scraping race ID: {race_id}")
+                                        race_data = scraper.scrape_race_result(race_id)
+                                        
+                                        if race_data:
+                                            if race_data['race_info']:
+                                                race_info = race_data['race_info']
+                                                race_info['race_id'] = race_id
+                                                place_race_infos.append(race_info)
+                                            
+                                            if race_data['race_results']:
+                                                for result in race_data['race_results']:
+                                                    result['race_id'] = race_id
+                                                    # レース情報をコピー
+                                                    if race_data['race_info']:
+                                                        for key in ['race_name', 'race_date', 'kaisai_kai', 'kaisai_place', 
+                                                                  'kaisai_nichime', 'track_type', 'track_direction', 
+                                                                  'track_inout', 'track_distance', 'weather', 
+                                                                  'track_condition', 'start_time', 'race_conditions']:
+                                                            if key in race_data['race_info']:
+                                                                result[key] = race_data['race_info'][key]
+                                                place_race_results.extend(race_data['race_results'])
+                                        
+                                        # レース間に3秒待機
+                                        time.sleep(3)
+                                        
+                                        # 処理済みのレースIDを追加
+                                        existing_race_ids.add(race_id)
                             else:
-                                # レース結果テーブルが見つからない場合は静かにスキップ
                                 continue
                         else:
-                            # 404などの場合は静かにスキップ
                             continue
                     
                     except Exception as e:
                         print(f"Error checking {first_race_id}: {str(e)}")
                         continue
-                
-                # レース間に3秒待機
-                time.sleep(3)
             
-            # 競馬場ごとにファイル保存
+            # 競馬場ごとにファイル保存（データがある場合のみ）
             if place_race_infos or place_race_results:
-                scraper.save_consolidated_csv(place_race_infos, place_race_results, output_dir, year, place)
+                scraper.save_consolidated_csv(place_race_infos, place_race_results, output_dir)
                 print(f"Saved data for {year}年 競馬場コード: {place}")
-                
-                # 処理済みのレースIDを追加
-                existing_race_ids.update(place_race_ids)
             
             # 競馬場間に30秒待機
             print(f"Waiting 30 seconds before processing next place...")
