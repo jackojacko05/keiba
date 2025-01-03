@@ -553,12 +553,19 @@ def main():
     
     # 開始年から現在の年まで
     for year in range(start_year, end_year + 1):
-        # 現在時刻（JST）を取得
-        jst_now = datetime.now(timezone(timedelta(hours=9)))  # UTC+9
+        jst_now = datetime.now(timezone(timedelta(hours=9)))
         print(f"\n[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Starting scraping for {year}年")
         
         # 競馬場ごとに処理
         for place in place_codes:
+            # 最後の位置から再開（前の年は全てスキップ、同じ年は前の競馬場までスキップ）
+            if last_position:
+                if year == last_year and place <= last_place:
+                    if place < last_place:
+                        print(f"Skipping {year}年 競馬場コード: {place} (already processed)")
+                        continue
+                    # last_placeの場合は処理を継続（この後のkaiとdayのチェックで必要な部分のみ処理）
+            
             jst_now = datetime.now(timezone(timedelta(hours=9)))
             print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Processing {year}年 競馬場コード: {place}")
             
