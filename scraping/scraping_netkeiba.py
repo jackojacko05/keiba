@@ -4,12 +4,14 @@ import pandas as pd
 from datetime import datetime
 import configparser
 import os
+import re
 
 class NetkeibaRaceScraper:
     def __init__(self):
         self.config = self._load_config()
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Cookie': 'uid=0; nkauth=0'
         }
 
     def _load_config(self):
@@ -36,7 +38,7 @@ class NetkeibaRaceScraper:
             soup = BeautifulSoup(response.text, 'html.parser')
             
             race_data = {
-                'race_name': self._get_race_name(soup),
+                'race_info': self._get_race_info(soup),
                 'race_details': self._get_race_details(soup),
                 'race_results': self._get_race_results(soup)
             }
@@ -50,12 +52,101 @@ class NetkeibaRaceScraper:
             print(f"Error scraping race {race_id}: {str(e)}")
             return None
 
-    def _get_race_name(self, soup):
-        """レース名を取得"""
-        race_name = soup.select_one('.RaceName')
-        if not race_name:
-            race_name = soup.select_one('.race_name')
-        return race_name.text.strip() if race_name else None
+    def _get_race_info(self, soup):
+        """レースの基本情報を取得"""
+        race_info = {}
+        
+        # レース名の取得
+        race_name_elem = soup.select_one('dl.racedata h1')
+        if race_name_elem:
+            # imgタグを削除
+            for img in race_name_elem.find_all('img'):
+                img.decompose()
+            race_info['race_name'] = race_name_elem.text.strip()
+        
+        # 基本情報の取得（日付、開催場所、ラウンド）
+        race_details = soup.select_one('div.data_intro p.smalltxt')
+        if race_details:
+            details_text = race_details.text.strip()
+            parts = details_text.split()
+            if len(parts) >= 2:
+                race_info['race_date'] = parts[0]
+                
+                # kaisai_infoを分割
+                kaisai_info = parts[1]
+                match = re.match(r'(\d+)回(.+)(\d+)日目', kaisai_info)
+                if match:
+                    race_info['kaisai_kai'] = match.group(1) + '回'
+                    race_info['kaisai_place'] = match.group(2)
+                    race_info['kaisai_nichime'] = match.group(3) + '日目'
+                
+                race_info['race_conditions'] = ' '.join(parts[2:])
+        
+        # レース詳細情報の取得
+        data_intro = soup.select_one('div.data_intro')
+        if data_intro:
+            data_lines = [line.strip() for line in data_intro.text.split('\n') if line.strip()]
+            for line in data_lines:
+                if '芝' in line and 'm' in line and '天候' in line:
+                    info_parts = line.split('/')
+                    
+                    # コース情報を分割
+                    if len(info_parts) > 0:
+                        course_info = info_parts[0].strip()
+                        # 例: "芝右 外2200m" → ["芝右", "外2200m"]
+                        course_parts = course_info.split()
+                        
+                        # 馬場の種類（芝/ダ）と回り（右/左/直線）を分離
+                        if len(course_parts) > 0:
+                            track_type = course_parts[0]
+                            race_info['track_type'] = '芝' if '芝' in track_type else 'ダ'
+                            race_info['track_direction'] = '右' if '右' in track_type else ('左' if '左' in track_type else '直線')
+                        
+                        # 内外とコース距離を分離
+                        if len(course_parts) > 1:
+                            distance_part = course_parts[1]
+                            # 内外の情報を抽出
+                            if '内' in distance_part:
+                                race_info['track_inout'] = '内'
+                                distance_part = distance_part.replace('内', '')
+                            elif '外' in distance_part:
+                                race_info['track_inout'] = '外'
+                                distance_part = distance_part.replace('外', '')
+                            else:
+                                race_info['track_inout'] = ''
+                            
+                            # 距離を抽出（mを除去）
+                            race_info['track_distance'] = distance_part.replace('m', '')
+                    
+                    # 天候、馬場状態、発走時刻
+                    for part in info_parts:
+                        part = part.strip()
+                        if '天候' in part:
+                            race_info['weather'] = part.split(':')[1].strip()
+                        elif '芝' in part and ':' in part:
+                            race_info['track_condition'] = part.split(':')[1].strip()
+                        elif '発走' in part:
+                            time_parts = part.split(':')
+                            if len(time_parts) >= 2:
+                                race_info['start_time'] = ':'.join(time_parts[1:]).strip()
+                    break
+        
+        # タイムスタンプの生成
+        if 'race_date' in race_info and 'start_time' in race_info:
+            try:
+                date_str = race_info['race_date'].replace('年', '-').replace('月', '-').replace('日', '')
+                time_str = race_info['start_time']
+                
+                if ':' not in time_str:
+                    time_str = f"{time_str[:2]}:{time_str[2:]}"
+                
+                datetime_str = f"{date_str} {time_str}"
+                race_info['timestamp'] = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M')
+                
+            except ValueError as e:
+                print(f"Error creating timestamp: {e}")
+        
+        return race_info
 
     def _get_race_details(self, soup):
         """レース詳細情報を取得"""
@@ -139,44 +230,69 @@ class NetkeibaRaceScraper:
         
         return results
 
-    def save_to_csv(self, race_data, output_path):
+    def save_to_csv(self, race_data, results_path, info_path):
         """結果をCSVファイルに保存"""
         try:
             if not race_data:
                 print("No race data to save")
                 return
-                
-            if not race_data['race_results']:
-                print("No race results to save")
-                return
-                
-            df = pd.DataFrame(race_data['race_results'])
             
-            # 出力ディレクトリの作成
-            output_dir = os.path.dirname(output_path)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir)
+            # レース結果の保存
+            if race_data['race_results']:
+                df_results = pd.DataFrame(race_data['race_results'])
+                output_dir = os.path.dirname(results_path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                df_results.to_csv(results_path, index=False, encoding='utf-8-sig')
+                print(f"Race results saved to {results_path}")
             
-            df.to_csv(output_path, index=False, encoding='utf-8-sig')
-            print(f"Results successfully saved to {output_path}")
+            # レース情報の保存
+            if race_data['race_info']:
+                # カラムの順序を指定
+                columns = [
+                    'race_name', 'race_date', 
+                    'kaisai_kai', 'kaisai_place', 'kaisai_nichime',
+                    'track_type', 'track_direction', 'track_inout', 'track_distance',  # 分割したコース情報
+                    'weather', 'track_condition', 'start_time',
+                    'race_conditions', 'timestamp'
+                ]
+                
+                df_info = pd.DataFrame([race_data['race_info']])
+                existing_columns = [col for col in columns if col in df_info.columns]
+                df_info = df_info[existing_columns]
+                
+                if 'timestamp' in df_info.columns:
+                    df_info['timestamp'] = pd.to_datetime(df_info['timestamp'])
+                
+                output_dir = os.path.dirname(info_path)
+                if output_dir and not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                
+                for col in df_info.columns:
+                    if df_info[col].dtype == 'object':
+                        df_info[col] = df_info[col].str.replace('\n', '').str.strip()
+                
+                df_info.to_csv(info_path, index=False, encoding='utf-8-sig')
+                print(f"Race information saved to {info_path}")
             
         except Exception as e:
-            print(f"Error saving results to CSV: {str(e)}")
+            print(f"Error saving to CSV: {str(e)}")
 
 def main():
     scraper = NetkeibaRaceScraper()
     race_id = "202408060411"
     
-    # スクリプトのディレクトリを基準とした出力パスの設定
+    # 出力パスの設定
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, 'results')
-    output_path = os.path.join(output_dir, f'race_result_{race_id}.csv')
+    results_path = os.path.join(output_dir, f'race_result_{race_id}.csv')
+    info_path = os.path.join(output_dir, f'race_info_{race_id}.csv')
     
     print(f"Starting scraping for race ID: {race_id}")
     race_data = scraper.scrape_race_result(race_id)
     
     if race_data:
-        scraper.save_to_csv(race_data, output_path)
+        scraper.save_to_csv(race_data, results_path, info_path)
     else:
         print("Failed to get race data")
 
