@@ -561,10 +561,9 @@ def main():
             # 最後の位置から再開（前の年は全てスキップ、同じ年は前の競馬場までスキップ）
             if last_position:
                 if year == last_year and place <= last_place:
-                    if place < last_place:
-                        print(f"Skipping {year}年 競馬場コード: {place} (already processed)")
-                        continue
-                    # last_placeの場合は処理を継続（この後のkaiとdayのチェックで必要な部分のみ処理）
+                    jst_now = datetime.now(timezone(timedelta(hours=9)))
+                    print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Skipping {year}年 競馬場コード: {place} (already processed)")
+                    continue
             
             jst_now = datetime.now(timezone(timedelta(hours=9)))
             print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Processing {year}年 競馬場コード: {place}")
