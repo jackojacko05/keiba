@@ -461,40 +461,54 @@ class NetkeibaRaceScraper:
 
 def main():
     scraper = NetkeibaRaceScraper()
-    base_id = "202406"
     
     # 出力パスの設定
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, 'results')
     
-    print(f"Starting scraping for base ID: {base_id}")
-    
-    # 対象日の全レースIDを取得
-    race_ids = scraper.get_race_ids_for_date(base_id)
-    print(f"Found {len(race_ids)} races")
-    
-    race_infos = []
-    race_results = []
-    
-    # 各レースをスクレイピング
-    for race_id in race_ids:
-        print(f"Scraping race ID: {race_id}")
-        race_data = scraper.scrape_race_result(race_id)
-        
-        if race_data:
-            if race_data['race_info']:
-                race_data['race_info']['race_id'] = race_id
-                race_infos.append(race_data['race_info'])
+    # 2015年から2025年まで
+    for year in range(2015, 2026):
+        # 1月から12月まで
+        for month in range(1, 13):
+            base_id = f"{year}{month:02d}"
+            print(f"\nStarting scraping for {year}年{month}月 (ID: {base_id})")
             
-            if race_data['race_results']:
-                for result in race_data['race_results']:
-                    result['race_id'] = race_id
-                race_results.extend(race_data['race_results'])
-    
-    if race_infos or race_results:
-        scraper.save_consolidated_csv(race_infos, race_results, output_dir)
-    else:
-        print("Failed to get race data")
+            # 対象月の全レースIDを取得
+            race_ids = scraper.get_race_ids_for_date(base_id)
+            print(f"Found {len(race_ids)} races")
+            
+            if not race_ids:
+                print(f"No races found for {year}年{month}月")
+                continue
+            
+            race_infos = []
+            race_results = []
+            
+            # 各レースをスクレイピング
+            for race_id in race_ids:
+                print(f"Scraping race ID: {race_id}")
+                race_data = scraper.scrape_race_result(race_id)
+                
+                if race_data:
+                    if race_data['race_info']:
+                        race_data['race_info']['race_id'] = race_id
+                        race_infos.append(race_data['race_info'])
+                    
+                    if race_data['race_results']:
+                        for result in race_data['race_results']:
+                            result['race_id'] = race_id
+                        race_results.extend(race_data['race_results'])
+                
+                # レース間に3秒待機
+                time.sleep(3)
+            
+            if race_infos or race_results:
+                scraper.save_consolidated_csv(race_infos, race_results, output_dir)
+                print(f"Saved data for {year}年{month}月")
+            
+            # 月間の処理が終わるごとに30秒待機
+            print(f"Waiting 30 seconds before processing next month...")
+            time.sleep(30)
 
 if __name__ == "__main__":
     main()
