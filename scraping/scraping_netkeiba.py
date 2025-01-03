@@ -354,13 +354,23 @@ class NetkeibaRaceScraper:
         
         return race_infos, race_results
 
-    def save_consolidated_csv(self, race_infos, race_results, output_dir):
+    def save_consolidated_csv(self, race_infos, race_results, output_dir, year, place_code):
         """
-        レース情報と結果を1つのCSVファイルにまとめて保存
+        レース情報と結果を年+競馬場ごとのCSVファイルに保存
+        Args:
+            year: 対象年
+            place_code: 競馬場コード
         """
         try:
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
+            
+            # ファイル名の設定（例：race_info_2024_01.csv）
+            info_filename = f'race_info_{year}_{place_code}.csv'
+            result_filename = f'race_result_{year}_{place_code}.csv'
+            
+            info_path = os.path.join(output_dir, info_filename)
+            results_path = os.path.join(output_dir, result_filename)
             
             # レース情報の保存
             if race_infos:
@@ -379,13 +389,10 @@ class NetkeibaRaceScraper:
                 if 'timestamp' in df_info.columns:
                     df_info['timestamp'] = pd.to_datetime(df_info['timestamp'])
                 
-                info_path = os.path.join(output_dir, 'race_info_consolidated.csv')
-                
                 # 既存のファイルがある場合は追記
                 if os.path.exists(info_path):
                     existing_df = pd.read_csv(info_path)
                     df_info = pd.concat([existing_df, df_info], ignore_index=True)
-                    # race_idでユニークにする
                     df_info = df_info.drop_duplicates(subset=['race_id'], keep='last')
                 
                 df_info.to_csv(info_path, index=False, encoding='utf-8-sig')
@@ -394,18 +401,13 @@ class NetkeibaRaceScraper:
             # レース結果の保存
             if race_results:
                 df_results = pd.DataFrame(race_results)
-                
-                # race_idを先頭に
                 cols = ['race_id'] + [col for col in df_results.columns if col != 'race_id']
                 df_results = df_results[cols]
-                
-                results_path = os.path.join(output_dir, 'race_result_consolidated.csv')
                 
                 # 既存のファイルがある場合は追記
                 if os.path.exists(results_path):
                     existing_df = pd.read_csv(results_path)
                     df_results = pd.concat([existing_df, df_results], ignore_index=True)
-                    # race_idと馬番でユニークにする
                     if '馬番' in df_results.columns:
                         df_results = df_results.drop_duplicates(subset=['race_id', '馬番'], keep='last')
                 
@@ -413,7 +415,7 @@ class NetkeibaRaceScraper:
                 print(f"Race results saved to {results_path}")
             
         except Exception as e:
-            print(f"Error saving consolidated CSV: {str(e)}")
+            print(f"Error saving CSV for year {year}, place {place_code}: {str(e)}")
 
     def get_race_ids_for_date(self, base_id):
         """
@@ -499,64 +501,79 @@ def main():
     existing_race_ids = scraper.get_existing_race_ids(output_dir)
     print(f"Found {len(existing_race_ids)} existing race records")
     
-    # 2015年から2025年まで
-    for year in range(2015, 2026):
-        # 1月から12月まで
-        for month in range(1, 13):
-            base_id = f"{year}{month:02d}"
-            print(f"\nStarting scraping for {year}年{month}月 (ID: {base_id})")
+    # 開始年と終了年の設定
+    start_year = 2015
+    end_year = datetime.now().year
+    
+    print(f"Scraping races from {start_year} to {end_year}")
+    
+    # 競馬場コード
+    place_codes = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
+    
+    # 開始年から現在の年まで
+    for year in range(start_year, end_year + 1):
+        print(f"\nStarting scraping for {year}年")
+        
+        # 競馬場ごとに処理
+        for place in place_codes:
+            print(f"Processing {year}年 競馬場コード: {place}")
             
-            # 対象月の全レースIDを取得
-            race_ids = scraper.get_race_ids_for_date(base_id)
+            place_race_ids = []
+            place_race_infos = []
+            place_race_results = []
             
-            # 未取得のレースIDのみをフィルタリング
-            new_race_ids = [race_id for race_id in race_ids if race_id not in existing_race_ids]
-            
-            print(f"Found {len(race_ids)} races, {len(new_race_ids)} new races to process")
-            
-            if not new_race_ids:
-                print(f"No new races to process for {year}年{month}月")
-                continue
-            
-            race_infos = []
-            race_results = []
-            
-            # 未取得のレースのみをスクレイピング
-            for race_id in new_race_ids:
-                print(f"Scraping race ID: {race_id}")
-                race_data = scraper.scrape_race_result(race_id)
-                
-                if race_data:
-                    if race_data['race_info']:
-                        race_info = race_data['race_info']
-                        race_info['race_id'] = race_id
-                        race_infos.append(race_info)
+            # 開催回数（1-12）でループ
+            for kai in range(1, 13):
+                # 開催日（1-20）でループ
+                for day in range(1, 21):
+                    base_race_id = f"{year}{place}{kai:02d}{day:02d}"
+                    first_race_id = f"{base_race_id}01"
+                    
+                    # まず1Rをチェックして開催があるか確認
+                    url = f'https://db.netkeiba.com/race/{first_race_id}'
+                    
+                    try:
+                        response = requests.get(url, headers=scraper.headers)
+                        time.sleep(1)  # 1秒待機
                         
-                        # レース結果にレース情報を追加
-                        if race_data['race_results']:
-                            for result in race_data['race_results']:
-                                result['race_id'] = race_id
-                                for key in ['race_name', 'race_date', 'kaisai_kai', 'kaisai_place', 
-                                          'kaisai_nichime', 'track_type', 'track_direction', 
-                                          'track_inout', 'track_distance', 'weather', 
-                                          'track_condition', 'start_time', 'race_conditions']:
-                                    if key in race_info:
-                                        result[key] = race_info[key]
-                            race_results.extend(race_data['race_results'])
+                        if response.status_code == 200:
+                            soup = BeautifulSoup(response.text, 'html.parser')
+                            if soup.select_one('.race_table_01'):
+                                print(f"Found races for {base_race_id}")
+                                # その日の全レースを追加（1R-12R）
+                                for race_num in range(1, 13):
+                                    race_id = f"{base_race_id}{race_num:02d}"
+                                    place_race_ids.append(race_id)
+                                    print(f"Added race: {race_id}")
+                            else:
+                                # レース結果テーブルが見つからない場合は静かにスキップ
+                                continue
+                        else:
+                            # 404などの場合は静かにスキップ
+                            continue
+                    
+                    except Exception as e:
+                        print(f"Error checking {first_race_id}: {str(e)}")
+                        continue
                 
                 # レース間に3秒待機
                 time.sleep(3)
             
-            if race_infos or race_results:
-                scraper.save_consolidated_csv(race_infos, race_results, output_dir)
-                print(f"Saved data for {year}年{month}月")
+            # 競馬場ごとにファイル保存
+            if place_race_infos or place_race_results:
+                scraper.save_consolidated_csv(place_race_infos, place_race_results, output_dir, year, place)
+                print(f"Saved data for {year}年 競馬場コード: {place}")
                 
                 # 処理済みのレースIDを追加
-                existing_race_ids.update(new_race_ids)
+                existing_race_ids.update(place_race_ids)
             
-            # 月間の処理が終わるごとに30秒待機
-            print(f"Waiting 30 seconds before processing next month...")
+            # 競馬場間に30秒待機
+            print(f"Waiting 30 seconds before processing next place...")
             time.sleep(30)
+        
+        # 年間の処理が終わるごとに60秒待機
+        print(f"Waiting 60 seconds before processing next year...")
+        time.sleep(60)
 
 if __name__ == "__main__":
     main()
