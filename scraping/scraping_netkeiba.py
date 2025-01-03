@@ -459,12 +459,45 @@ class NetkeibaRaceScraper:
         
         return race_ids
 
+    def get_existing_race_ids(self, output_dir):
+        """
+        既存のCSVファイルから取得済みのレースIDを取得
+        """
+        existing_ids = set()
+        
+        info_path = os.path.join(output_dir, 'race_info_consolidated.csv')
+        result_path = os.path.join(output_dir, 'race_result_consolidated.csv')
+        
+        # race_info_consolidated.csvから取得
+        if os.path.exists(info_path):
+            try:
+                df_info = pd.read_csv(info_path)
+                if 'race_id' in df_info.columns:
+                    existing_ids.update(df_info['race_id'].astype(str))
+            except Exception as e:
+                print(f"Error reading {info_path}: {e}")
+        
+        # race_result_consolidated.csvから取得
+        if os.path.exists(result_path):
+            try:
+                df_result = pd.read_csv(result_path)
+                if 'race_id' in df_result.columns:
+                    existing_ids.update(df_result['race_id'].astype(str))
+            except Exception as e:
+                print(f"Error reading {result_path}: {e}")
+        
+        return existing_ids
+
 def main():
     scraper = NetkeibaRaceScraper()
     
     # 出力パスの設定
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_dir = os.path.join(script_dir, 'results')
+    
+    # 既存のレースIDを取得
+    existing_race_ids = scraper.get_existing_race_ids(output_dir)
+    print(f"Found {len(existing_race_ids)} existing race records")
     
     # 2015年から2025年まで
     for year in range(2015, 2026):
@@ -475,17 +508,21 @@ def main():
             
             # 対象月の全レースIDを取得
             race_ids = scraper.get_race_ids_for_date(base_id)
-            print(f"Found {len(race_ids)} races")
             
-            if not race_ids:
-                print(f"No races found for {year}年{month}月")
+            # 未取得のレースIDのみをフィルタリング
+            new_race_ids = [race_id for race_id in race_ids if race_id not in existing_race_ids]
+            
+            print(f"Found {len(race_ids)} races, {len(new_race_ids)} new races to process")
+            
+            if not new_race_ids:
+                print(f"No new races to process for {year}年{month}月")
                 continue
             
             race_infos = []
             race_results = []
             
-            # 各レースをスクレイピング
-            for race_id in race_ids:
+            # 未取得のレースのみをスクレイピング
+            for race_id in new_race_ids:
                 print(f"Scraping race ID: {race_id}")
                 race_data = scraper.scrape_race_result(race_id)
                 
@@ -499,7 +536,6 @@ def main():
                         if race_data['race_results']:
                             for result in race_data['race_results']:
                                 result['race_id'] = race_id
-                                # レース情報をコピー
                                 for key in ['race_name', 'race_date', 'kaisai_kai', 'kaisai_place', 
                                           'kaisai_nichime', 'track_type', 'track_direction', 
                                           'track_inout', 'track_distance', 'weather', 
@@ -514,6 +550,9 @@ def main():
             if race_infos or race_results:
                 scraper.save_consolidated_csv(race_infos, race_results, output_dir)
                 print(f"Saved data for {year}年{month}月")
+                
+                # 処理済みのレースIDを追加
+                existing_race_ids.update(new_race_ids)
             
             # 月間の処理が終わるごとに30秒待機
             print(f"Waiting 30 seconds before processing next month...")
