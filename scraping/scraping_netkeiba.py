@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import configparser
 import os
 import re
@@ -489,6 +489,40 @@ class NetkeibaRaceScraper:
         
         return existing_ids
 
+    def get_last_processed_position(self, output_dir):
+        """
+        最後に処理したレースの位置を特定
+        Returns:
+            tuple: (year, place_code, kai, day) または None
+        """
+        info_path = os.path.join(output_dir, 'race_info_consolidated.csv')
+        result_path = os.path.join(output_dir, 'race_result_consolidated.csv')
+        
+        last_race_id = None
+        
+        # 両方のファイルから最新のレースIDを取得
+        for path in [info_path, result_path]:
+            if os.path.exists(path):
+                try:
+                    df = pd.read_csv(path)
+                    if 'race_id' in df.columns and not df['race_id'].empty:
+                        # 数値として最大のレースIDを取得
+                        current_last_id = str(max(df['race_id'].astype(str).astype(int)))
+                        if last_race_id is None or int(current_last_id) > int(last_race_id):
+                            last_race_id = current_last_id
+                except Exception as e:
+                    print(f"Error reading {path}: {e}")
+        
+        if last_race_id:
+            # レースIDを分解（例: 202401010102 → 2024, 01, 01, 01）
+            year = last_race_id[:4]
+            place = last_race_id[4:6]
+            kai = last_race_id[6:8]
+            day = last_race_id[8:10]
+            return int(year), place, int(kai), int(day)
+        
+        return None
+
 def main():
     scraper = NetkeibaRaceScraper()
     
@@ -500,9 +534,17 @@ def main():
     existing_race_ids = scraper.get_existing_race_ids(output_dir)
     print(f"Found {len(existing_race_ids)} existing race records")
     
+    # 最後に処理した位置を取得
+    last_position = scraper.get_last_processed_position(output_dir)
+    
     # 開始年と終了年の設定
     start_year = 2015
     end_year = datetime.now().year
+    
+    if last_position:
+        last_year, last_place, last_kai, last_day = last_position
+        start_year = last_year
+        print(f"Resuming from year {start_year}, place {last_place}, kai {last_kai}, day {last_day}")
     
     print(f"Scraping races from {start_year} to {end_year}")
     
@@ -511,20 +553,30 @@ def main():
     
     # 開始年から現在の年まで
     for year in range(start_year, end_year + 1):
-        print(f"\nStarting scraping for {year}年")
+        # 現在時刻（JST）を取得
+        jst_now = datetime.now(timezone(timedelta(hours=9)))  # UTC+9
+        print(f"\n[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Starting scraping for {year}年")
         
         # 競馬場ごとに処理
         for place in place_codes:
-            print(f"Processing {year}年 競馬場コード: {place}")
+            jst_now = datetime.now(timezone(timedelta(hours=9)))
+            print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Processing {year}年 競馬場コード: {place}")
             
-            place_race_ids = []
             place_race_infos = []
             place_race_results = []
             
             # 開催回数（1-12）でループ
             for kai in range(1, 13):
+                # 最後の位置から再開
+                if last_position and year == last_year and place == last_place and kai < last_kai:
+                    continue
+                
                 # 開催日（1-20）でループ
                 for day in range(1, 21):
+                    # 最後の位置から再開
+                    if last_position and year == last_year and place == last_place and kai == last_kai and day <= last_day:
+                        continue
+                    
                     base_race_id = f"{year}{place}{kai:02d}{day:02d}"
                     first_race_id = f"{base_race_id}01"
                     
@@ -584,14 +636,17 @@ def main():
             # 競馬場ごとにファイル保存（データがある場合のみ）
             if place_race_infos or place_race_results:
                 scraper.save_consolidated_csv(place_race_infos, place_race_results, output_dir)
-                print(f"Saved data for {year}年 競馬場コード: {place}")
+                jst_now = datetime.now(timezone(timedelta(hours=9)))
+                print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Saved data for {year}年 競馬場コード: {place}")
             
             # 競馬場間に30秒待機
-            print(f"Waiting 30 seconds before processing next place...")
+            jst_now = datetime.now(timezone(timedelta(hours=9)))
+            print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Waiting 30 seconds before processing next place...")
             time.sleep(30)
         
         # 年間の処理が終わるごとに60秒待機
-        print(f"Waiting 60 seconds before processing next year...")
+        jst_now = datetime.now(timezone(timedelta(hours=9)))
+        print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Waiting 60 seconds before processing next year...")
         time.sleep(60)
 
 if __name__ == "__main__":
