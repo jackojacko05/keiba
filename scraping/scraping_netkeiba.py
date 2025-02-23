@@ -71,7 +71,7 @@ class NetkeibaRaceScraper:
             details_text = race_details.text.strip()
             parts = details_text.split()
             if len(parts) >= 2:
-                # 日付の処理を修正
+                # 日付の処理を修正（YYYY-MM-DD形式に統一）
                 raw_date = parts[0]
                 race_info['race_date'] = (pd.to_datetime(raw_date
                                         .replace('年', '-')
@@ -140,23 +140,26 @@ class NetkeibaRaceScraper:
                         elif '発走' in part:
                             time_parts = part.split(':')
                             if len(time_parts) >= 2:
-                                race_info['start_time'] = ':'.join(time_parts[1:]).strip()
+                                # HH:MM:SS形式に統一
+                                time_str = ':'.join(time_parts[1:]).strip()
+                                if len(time_str.split(':')) == 1:
+                                    time_str = f"{time_str}:00"
+                                race_info['start_time'] = time_str
                     break
         
         # タイムスタンプの生成
         if 'race_date' in race_info and 'start_time' in race_info:
             try:
-                date_str = race_info['race_date'].replace('年', '-').replace('月', '-').replace('日', '')
-                time_str = race_info['start_time']
-                
-                if ':' not in time_str:
-                    time_str = f"{time_str[:2]}:{time_str[2:]}"
-                
-                datetime_str = f"{date_str} {time_str}"
-                race_info['timestamp'] = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M')
+                # 既に標準形式になっているのでそのまま結合
+                datetime_str = f"{race_info['race_date']} {race_info['start_time']}"
+                race_info['timestamp'] = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
                 
             except ValueError as e:
                 print(f"Error creating timestamp: {e}")
+        
+        # start_timeの処理を修正（HH:MM:SS形式に統一）
+        if 'start_time' in race_info and race_info['start_time']:
+            race_info['start_time'] = f"{race_info['start_time']}:00"
         
         return race_info
 
@@ -219,8 +222,23 @@ class NetkeibaRaceScraper:
                     value = cell.text.strip()
                     header = headers[i]
                     
+                    # 着順の処理（数値以外は-1に変換）
+                    if header == '着順':
+                        try:
+                            result[header] = int(value)
+                        except ValueError:
+                            result[header] = -1
+                    
+                    # 単勝オッズの処理
+                    elif header == '単勝':
+                        value = value.replace('---', '-1')  # 特殊な値を-1に置換
+                        try:
+                            result[header] = float(value)
+                        except (ValueError, TypeError):
+                            result[header] = -1.0
+                    
                     # タイムの処理
-                    if header == 'タイム':
+                    elif header == 'タイム':
                         result[header] = self._convert_time_to_seconds(value)
                     
                     # 通過順位の処理
@@ -265,6 +283,13 @@ class NetkeibaRaceScraper:
                             result['賞金'] = value
                         except ValueError:
                             result['賞金'] = 0.0
+                    
+                    # オッズの処理
+                    elif header == 'オッズ':
+                        try:
+                            result[header] = float(value)
+                        except (ValueError, TypeError):
+                            result[header] = -1.0
                     
                     # その他のカラム
                     else:
