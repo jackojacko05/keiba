@@ -71,7 +71,13 @@ class NetkeibaRaceScraper:
             details_text = race_details.text.strip()
             parts = details_text.split()
             if len(parts) >= 2:
-                race_info['race_date'] = parts[0]
+                # 日付の処理を修正
+                raw_date = parts[0]
+                race_info['race_date'] = (pd.to_datetime(raw_date
+                                        .replace('年', '-')
+                                        .replace('月', '-')
+                                        .replace('日', ''))
+                                        .strftime('%Y-%m-%d'))
                 
                 # kaisai_infoを分割（例：6回京都4日目 → 6, 京都, 4）
                 kaisai_info = parts[1]
