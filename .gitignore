@@ -4,3 +4,7 @@ config.ini
 debug_output.html
 scraping/results/
 .DS_Store
+.gcloudignore
+.conda/
+venv/
+.config/
