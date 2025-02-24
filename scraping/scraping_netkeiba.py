@@ -602,21 +602,33 @@ def scrape_races(request):
 if __name__ == "__main__":
     scraper = NetkeibaRaceScraper()
     
-    # 既存のレースIDを取得
-    existing_race_ids = scraper.get_existing_race_ids()
-    print(f"Found {len(existing_race_ids)} existing race records")
-    
-    # 最後に処理した位置を取得
-    last_position = scraper.get_last_processed_position()
-    
-    # 開始年と終了年の設定
-    start_year = 2015
-    end_year = datetime.now().year
-    
-    if last_position:
-        last_year, last_place, last_kai, last_day = last_position
-        start_year = last_year
-        print(f"Resuming from year {start_year}, place {last_place}, kai {last_kai}, day {last_day}")
+    try:
+        # 既存のレースIDを取得
+        existing_race_ids = scraper.get_existing_race_ids()
+        print(f"Found {len(existing_race_ids)} existing race records")
+        
+        # 最後に処理した位置を取得
+        last_position = scraper.get_last_processed_position()
+        
+        # 開始年と終了年の設定
+        current_year = datetime.now().year
+        start_year = current_year - 1  # デフォルトは前年から
+        end_year = current_year
+        
+        if last_position:
+            last_year, last_place, last_kai, last_day = last_position
+            start_year = last_year
+            print(f"Resuming from year {start_year}, place {last_place}, kai {last_kai}, day {last_day}")
+        else:
+            print(f"Starting fresh from year {start_year}")
+    except Exception as e:
+        print(f"Error initializing: {str(e)}")
+        print("Starting with default settings...")
+        existing_race_ids = set()
+        current_year = datetime.now().year
+        start_year = current_year - 1
+        end_year = current_year
+        last_position = None
     
     print(f"Scraping races from {start_year} to {end_year}")
     

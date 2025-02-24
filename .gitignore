@@ -7,3 +7,4 @@ scraping/results/
 .gcloudignore
 .conda/
 venv/
+.config/
