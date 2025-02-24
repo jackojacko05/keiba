@@ -463,11 +463,11 @@ class NetkeibaRaceScraper:
             print(f"Error saving to GCS: {str(e)}")
             raise
 
-    def process_races(self, year, place=None, kai=None, day=None):
+    def process_races(self, year=None, place=None, kai=None, day=None):
         """
         指定された条件でレースをスクレイピング
         Args:
-            year (int): 年
+            year (int, optional): 年。指定がない場合は2024年から現在年まで処理
             place (str, optional): 競馬場コード
             kai (int, optional): 開催回
             day (int, optional): 開催日
@@ -479,12 +479,34 @@ class NetkeibaRaceScraper:
             existing_race_ids = self.get_existing_race_ids()
             print(f"Found {len(existing_race_ids)} existing race records")
             
+            # 最後に処理した位置を取得（ログ表示用）
+            last_position = self.get_last_processed_position()
+            if last_position:
+                print(f"Last processed position: Year={last_position[0]}, Place={last_position[1]}, Kai={last_position[2]}, Day={last_position[3]}")
+            else:
+                print("No last processed position found")
+            
+            # 年の設定
+            current_year = datetime.now().year
+            if year is None:
+                start_year = 2024  # 2024年から開始
+                end_year = current_year
+            else:
+                start_year = end_year = year
+            
+            print(f"Processing races from {start_year} to {end_year}")
+            
             # 特定の日付が指定されている場合
-            if place and kai and day:
+            if all([year, place, kai, day]):
                 return self._process_specific_date(year, place, kai, day, existing_race_ids)
             
-            # 年間データを処理する場合
-            return self._process_yearly_data(year, existing_race_ids)
+            # 年間データを処理
+            for year in range(start_year, end_year + 1):
+                result = self._process_yearly_data(year, existing_race_ids, None)  # last_positionをNoneに設定
+                if result['status'] == 'error':
+                    return result
+            
+            return {'status': 'success', 'message': f'Processed all races from {start_year} to {end_year}'}
             
         except Exception as e:
             error_message = str(e)
@@ -521,35 +543,70 @@ class NetkeibaRaceScraper:
         
         return {'status': 'success', 'message': f'Processed races for {base_race_id}'}
 
-    def _process_yearly_data(self, year, existing_race_ids):
+    def _process_yearly_data(self, year, existing_race_ids, last_position):
         """年間データを処理"""
         place_codes = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
         
         # 最後に処理した位置を取得
-        last_position = self.get_last_processed_position()
         if last_position:
             last_year, last_place, last_kai, last_day = last_position
             if year < last_year:
+                print(f"Skipping year {year} as it's before last processed year {last_year}")
                 return {'status': 'skip', 'message': f'Year {year} already processed'}
         
         jst_now = datetime.now(timezone(timedelta(hours=9)))
         print(f"\n[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Starting scraping for {year}年")
         
+        # 最後に処理したレースIDを取得
+        last_race_id = None
+        if existing_race_ids:
+            last_race_id = max(existing_race_ids)
+            if last_race_id and int(last_race_id[:4]) == year:
+                # 同じ年の場合、最後のレースの次から開始
+                start_place = last_race_id[4:6]
+                start_kai = int(last_race_id[6:8])
+                start_day = int(last_race_id[8:10])
+                start_race = int(last_race_id[10:12])
+                
+                # 次のレースを設定
+                if start_race < 12:
+                    start_race += 1
+                else:
+                    start_race = 1
+                    if start_day < 20:
+                        start_day += 1
+                    else:
+                        start_day = 1
+                        if start_kai < 12:
+                            start_kai += 1
+                        else:
+                            start_kai = 1
+                            # 次の競馬場へ
+                            next_place = str(int(start_place) + 1).zfill(2)
+                            if int(next_place) > 10:
+                                return {'status': 'success', 'message': f'Completed all races for {year}'}
+                            start_place = next_place
+                
+                # 開始位置以前の競馬場をスキップ
+                place_codes = [p for p in place_codes if int(p) >= int(start_place)]
+            else:
+                start_kai = 1
+                start_day = 1
+                start_race = 1
+        else:
+            start_kai = 1
+            start_day = 1
+            start_race = 1
+        
         for place in place_codes:
-            if last_position and year == last_year and place <= last_place:
-                continue
-            
             race_infos = []
             race_results = []
             
-            for kai in range(1, 13):
-                if last_position and year == last_year and place == last_place and kai < last_kai:
-                    continue
-                
-                for day in range(1, 21):
-                    if last_position and year == last_year and place == last_place and kai == last_kai and day <= last_day:
-                        continue
-                    
+            # 開始位置の設定
+            kai_range = range(start_kai if place == start_place else 1, 13)
+            for kai in kai_range:
+                day_range = range(start_day if place == start_place and kai == start_kai else 1, 21)
+                for day in day_range:
                     base_race_id = f"{year}{place}{kai:02d}{day:02d}"
                     first_race_id = f"{base_race_id}01"
                     
@@ -562,7 +619,8 @@ class NetkeibaRaceScraper:
                             if soup.select_one('.race_table_01'):
                                 print(f"Found races for {base_race_id}")
                                 
-                                for race_num in range(1, 13):
+                                race_range = range(start_race if place == start_place and kai == start_kai and day == start_day else 1, 13)
+                                for race_num in race_range:
                                     race_id = f"{base_race_id}{race_num:02d}"
                                     
                                     if race_id not in existing_race_ids:
@@ -582,10 +640,21 @@ class NetkeibaRaceScraper:
                                         
                                         time.sleep(3)
                                         existing_race_ids.add(race_id)
+                                    else:
+                                        print(f"Skipping race ID {race_id} as it already exists in the database")
+                                
+                                # 最初のレース以降は通常の開始位置から
+                                start_race = 1
                 
                     except Exception as e:
                         print(f"Error checking {first_race_id}: {str(e)}")
                         continue
+                
+                # 最初の日以降は通常の開始位置から
+                start_day = 1
+            
+            # 最初の開催回以降は通常の開始位置から
+            start_kai = 1
             
             if race_infos or race_results:
                 self.save_consolidated_csv(race_infos, race_results)
@@ -602,10 +671,10 @@ def scrape_races(request):
     try:
         request_json = request.get_json(silent=True)
         
-        year = request_json.get('year', datetime.now().year) if request_json else datetime.now().year
-        place = request_json.get('place', None) if request_json else None
-        kai = request_json.get('kai', None) if request_json else None
-        day = request_json.get('day', None) if request_json else None
+        year = request_json.get('year') if request_json else None
+        place = request_json.get('place') if request_json else None
+        kai = request_json.get('kai') if request_json else None
+        day = request_json.get('day') if request_json else None
         
         scraper = NetkeibaRaceScraper()
         result = scraper.process_races(year, place, kai, day)
@@ -620,132 +689,7 @@ def scrape_races(request):
 # ローカル実行用のエントリーポイント
 if __name__ == "__main__":
     scraper = NetkeibaRaceScraper()
-    
-    try:
-        # 既存のレースIDを取得
-        existing_race_ids = scraper.get_existing_race_ids()
-        print(f"Found {len(existing_race_ids)} existing race records")
-        
-        # 最後に処理した位置を取得
-        last_position = scraper.get_last_processed_position()
-        
-        # 開始年と終了年の設定
-        current_year = datetime.now().year
-        start_year = current_year - 1  # デフォルトは前年から
-        end_year = current_year
-        
-        if last_position:
-            last_year, last_place, last_kai, last_day = last_position
-            start_year = last_year
-            print(f"Resuming from year {start_year}, place {last_place}, kai {last_kai}, day {last_day}")
-        else:
-            print(f"Starting fresh from year {start_year}")
-    except Exception as e:
-        print(f"Error initializing: {str(e)}")
-        print("Starting with default settings...")
-        existing_race_ids = set()
-        current_year = datetime.now().year
-        start_year = current_year - 1
-        end_year = current_year
-        last_position = None
-    
-    print(f"Scraping races from {start_year} to {end_year}")
-    
-    # 競馬場コード
-    place_codes = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
-    
-    # 開始年から現在の年まで
-    for year in range(start_year, end_year + 1):
-        jst_now = datetime.now(timezone(timedelta(hours=9)))
-        print(f"\n[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Starting scraping for {year}年")
-        
-        # 競馬場ごとに処理
-        for place in place_codes:
-            # 最後の位置から再開（前の年は全てスキップ、同じ年は前の競馬場までスキップ）
-            if last_position:
-                if year == last_year and place <= last_place:
-                    jst_now = datetime.now(timezone(timedelta(hours=9)))
-                    print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Skipping {year}年 競馬場コード: {place} (already processed)")
-                    continue
-            
-            jst_now = datetime.now(timezone(timedelta(hours=9)))
-            print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Processing {year}年 競馬場コード: {place}")
-            
-            race_infos = []
-            race_results = []
-            
-            # 開催回数（1-12）でループ
-            for kai in range(1, 13):
-                # 最後の位置から再開
-                if last_position and year == last_year and place == last_place and kai < last_kai:
-                    continue
-                
-                # 開催日（1-20）でループ
-                for day in range(1, 21):
-                    # 最後の位置から再開
-                    if last_position and year == last_year and place == last_place and kai == last_kai and day <= last_day:
-                        continue
-                    
-                    base_race_id = f"{year}{place}{kai:02d}{day:02d}"
-                    first_race_id = f"{base_race_id}01"
-                    
-                    # まず1Rをチェックして開催があるか確認
-                    url = f'https://db.netkeiba.com/race/{first_race_id}'
-                    
-                    try:
-                        response = requests.get(url, headers=scraper.headers)
-                        time.sleep(1)  # 1秒待機
-                        
-                        if response.status_code == 200:
-                            soup = BeautifulSoup(response.text, 'html.parser')
-                            if soup.select_one('.race_table_01'):
-                                print(f"Found races for {base_race_id}")
-                                # その日の全レースを追加（1R-12R）
-                                for race_num in range(1, 13):
-                                    race_id = f"{base_race_id}{race_num:02d}"
-                                    
-                                    # 未取得のレースのみ処理
-                                    if race_id not in existing_race_ids:
-                                        print(f"Scraping race ID: {race_id}")
-                                        race_data = scraper.scrape_race_result(race_id)
-                                        
-                                        if race_data:
-                                            if race_data['race_info']:
-                                                race_info = race_data['race_info']
-                                                race_info['race_id'] = race_id
-                                                race_infos.append(race_info)
-                                            
-                                            if race_data['race_results']:
-                                                for result in race_data['race_results']:
-                                                    result['race_id'] = race_id
-                                                race_results.extend(race_data['race_results'])
-                                        
-                                        # レース間に3秒待機
-                                        time.sleep(3)
-                                        
-                                        # 処理済みのレースIDを追加
-                                        existing_race_ids.add(race_id)
-                            else:
-                                continue
-                        else:
-                            continue
-                    
-                    except Exception as e:
-                        print(f"Error checking {first_race_id}: {str(e)}")
-                        continue
-            
-            # 競馬場ごとにファイル保存（データがある場合のみ）
-            if race_infos or race_results:
-                scraper.save_consolidated_csv(race_infos, race_results)
-                jst_now = datetime.now(timezone(timedelta(hours=9)))
-                print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Saved data for {year}年 競馬場コード: {place}")
-            
-            # 競馬場間に30秒待機
-            jst_now = datetime.now(timezone(timedelta(hours=9)))
-            print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Waiting 30 seconds before processing next place...")
-            time.sleep(30)
-        
-        # 年間の処理が終わるごとに60秒待機
-        jst_now = datetime.now(timezone(timedelta(hours=9)))
-        print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Waiting 60 seconds before processing next year...")
-        time.sleep(60)
+    result = scraper.process_races()
+    print(f"Scraping completed with status: {result['status']}")
+    if result['status'] == 'error':
+        print(f"Error message: {result['message']}")
