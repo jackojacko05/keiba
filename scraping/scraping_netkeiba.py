@@ -1,25 +1,25 @@
-import requests
-from bs4 import BeautifulSoup
+import functions_framework
+from google.cloud import storage
+from google.cloud import bigquery
 import pandas as pd
+from bs4 import BeautifulSoup
+import requests
 from datetime import datetime, timezone, timedelta
-import configparser
 import os
 import re
 import time
+import tempfile
 
 class NetkeibaRaceScraper:
     def __init__(self):
-        self.config = self._load_config()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Cookie': 'uid=0; nkauth=0'
         }
-
-    def _load_config(self):
-        config = configparser.ConfigParser()
-        config_path = os.path.join(os.path.dirname(__file__), '..', 'config.ini')
-        config.read(config_path, encoding='utf-8')
-        return config
+        # GCSクライアントの初期化
+        self.storage_client = storage.Client()
+        # BigQueryクライアントの初期化
+        self.bq_client = bigquery.Client()
 
     def scrape_race_result(self, race_id):
         """
@@ -299,392 +299,206 @@ class NetkeibaRaceScraper:
         
         return results
 
-    def save_to_csv(self, race_data, results_path, info_path):
-        """結果をCSVファイルに保存"""
-        try:
-            if not race_data:
-                print("No race data to save")
-                return
-            
-            # レース結果の保存
-            if race_data['race_results']:
-                df_results = pd.DataFrame(race_data['race_results'])
-                
-                # race_idカラムを追加
-                race_id = os.path.splitext(os.path.basename(results_path))[0].replace('race_result_', '')
-                df_results['race_id'] = race_id
-                
-                # カラムの順序を指定（race_idを先頭に）
-                cols = ['race_id'] + [col for col in df_results.columns if col != 'race_id']
-                df_results = df_results[cols]
-                
-                output_dir = os.path.dirname(results_path)
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                df_results.to_csv(results_path, index=False, encoding='utf-8-sig')
-                print(f"Race results saved to {results_path}")
-            
-            # レース情報の保存
-            if race_data['race_info']:
-                # カラムの順序を指定（race_idを先頭に追加）
-                columns = [
-                    'race_id',  # 追加
-                    'race_name', 'race_date', 
-                    'kaisai_kai', 'kaisai_place', 'kaisai_nichime',
-                    'track_type', 'track_direction', 'track_inout', 'track_distance',
-                    'weather', 'track_condition', 'start_time',
-                    'race_conditions', 'timestamp'
-                ]
-                
-                df_info = pd.DataFrame([race_data['race_info']])
-                
-                # race_idカラムを追加
-                race_id = os.path.splitext(os.path.basename(info_path))[0].replace('race_info_', '')
-                df_info['race_id'] = race_id
-                
-                existing_columns = [col for col in columns if col in df_info.columns]
-                df_info = df_info[existing_columns]
-                
-                if 'timestamp' in df_info.columns:
-                    df_info['timestamp'] = pd.to_datetime(df_info['timestamp'])
-                
-                output_dir = os.path.dirname(info_path)
-                if output_dir and not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                
-                for col in df_info.columns:
-                    if df_info[col].dtype == 'object':
-                        df_info[col] = df_info[col].str.replace('\n', '').str.strip()
-                
-                df_info.to_csv(info_path, index=False, encoding='utf-8-sig')
-                print(f"Race information saved to {info_path}")
-            
-        except Exception as e:
-            print(f"Error saving to CSV: {str(e)}")
-
-    def scrape_multiple_races(self, start_race_id):
+    def get_existing_race_ids(self):
         """
-        指定されたレースIDから順番にスクレイピングを行う
-        Args:
-            start_race_id (str): 開始レースID (例: "202406")
-        """
-        base_id = start_race_id
-        race_infos = []
-        race_results = []
-        
-        # 1R から 12R まで
-        for race_num in range(1, 13):
-            race_id = f"{base_id}{str(race_num).zfill(2)}"
-            print(f"Scraping race ID: {race_id}")
-            
-            race_data = self.scrape_race_result(race_id)
-            if race_data:
-                if race_data['race_info']:
-                    race_data['race_info']['race_id'] = race_id
-                    race_infos.append(race_data['race_info'])
-                
-                if race_data['race_results']:
-                    for result in race_data['race_results']:
-                        result['race_id'] = race_id
-                    race_results.extend(race_data['race_results'])
-        
-        return race_infos, race_results
-
-    def save_consolidated_csv(self, race_infos, race_results, output_dir):
-        """
-        レース情報と結果を1つのCSVファイルに保存
-        """
-        try:
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-            
-            # 固定のファイル名を使用
-            info_path = os.path.join(output_dir, 'race_info_consolidated.csv')
-            results_path = os.path.join(output_dir, 'race_result_consolidated.csv')
-            
-            # レース情報の保存
-            if race_infos:
-                columns = [
-                    'race_id', 'race_name', 'race_date',
-                    'kaisai_kai', 'kaisai_place', 'kaisai_nichime',
-                    'track_type', 'track_direction', 'track_inout', 'track_distance',
-                    'weather', 'track_condition', 'start_time',
-                    'race_conditions', 'timestamp'
-                ]
-                
-                df_info = pd.DataFrame(race_infos)
-                existing_columns = [col for col in columns if col in df_info.columns]
-                df_info = df_info[existing_columns]
-                
-                if 'timestamp' in df_info.columns:
-                    df_info['timestamp'] = pd.to_datetime(df_info['timestamp'])
-                
-                # 既存のファイルがある場合は追記
-                if os.path.exists(info_path):
-                    existing_df = pd.read_csv(info_path)
-                    df_info = pd.concat([existing_df, df_info], ignore_index=True)
-                    df_info = df_info.drop_duplicates(subset=['race_id'], keep='last')
-                
-                df_info.to_csv(info_path, index=False, encoding='utf-8-sig')
-                print(f"Race information saved to {info_path}")
-            
-            # レース結果の保存
-            if race_results:
-                df_results = pd.DataFrame(race_results)
-                cols = ['race_id'] + [col for col in df_results.columns if col != 'race_id']
-                df_results = df_results[cols]
-                
-                # 既存のファイルがある場合は追記
-                if os.path.exists(results_path):
-                    existing_df = pd.read_csv(results_path)
-                    df_results = pd.concat([existing_df, df_results], ignore_index=True)
-                    if '馬番' in df_results.columns:
-                        df_results = df_results.drop_duplicates(subset=['race_id', '馬番'], keep='last')
-                
-                df_results.to_csv(results_path, index=False, encoding='utf-8-sig')
-                print(f"Race results saved to {results_path}")
-            
-        except Exception as e:
-            print(f"Error saving CSV: {str(e)}")
-
-    def get_race_ids_for_date(self, base_id):
-        """
-        指定された日付のレースID一覧を取得
-        Args:
-            base_id (str): 基準となるレースID (例: "202406")
-        Returns:
-            list: レースID一覧
-        """
-        race_ids = []
-        
-        # 開催場所のコード（主要な競馬場）
-        place_codes = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
-        
-        # 各開催場所の各開催日をチェック
-        for place in place_codes:
-            for day in range(1, 9):  # 通常1-8日までの開催
-                # レースIDの構成: YYYYMM + 場所コード + 開催日 + レース番号
-                base_race_id = f"{base_id}{place}{day:02d}"
-                
-                # まず1Rをチェックして開催があるか確認
-                first_race_id = f"{base_race_id}01"
-                url = f'https://db.netkeiba.com/race/{first_race_id}'
-                
-                try:
-                    response = requests.get(url, headers=self.headers)
-                    time.sleep(1)  # 1秒待機
-                    
-                    if response.status_code == 200:
-                        # レース結果ページが存在するか確認
-                        soup = BeautifulSoup(response.text, 'html.parser')
-                        if soup.select_one('.race_table_01'):
-                            print(f"Found races for {base_race_id}")
-                            # その日の全レースを追加（1R-12R）
-                            for race_num in range(1, 13):
-                                race_id = f"{base_race_id}{race_num:02d}"
-                                race_ids.append(race_id)
-                                print(f"Added race: {race_id}")
-                    
-                except Exception as e:
-                    print(f"Error checking {first_race_id}: {str(e)}")
-                    continue
-        
-        return race_ids
-
-    def get_existing_race_ids(self, output_dir):
-        """
-        既存のCSVファイルから取得済みのレースIDを取得
+        GCSの既存のCSVファイルから取得済みのレースIDを取得
         """
         existing_ids = set()
         
-        info_path = os.path.join(output_dir, 'race_info_consolidated.csv')
-        result_path = os.path.join(output_dir, 'race_result_consolidated.csv')
-        
-        # race_info_consolidated.csvから取得
-        if os.path.exists(info_path):
-            try:
-                df_info = pd.read_csv(info_path)
+        try:
+            # race_info_formatted.csvの確認
+            info_bucket = self.storage_client.bucket('nk_race_info')
+            info_blob = info_bucket.blob('race_info_formatted.csv')
+            
+            if info_blob.exists():
+                # 一時ファイルにダウンロード
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                    info_blob.download_to_file(temp_file)
+                
+                # CSVを読み込み
+                df_info = pd.read_csv(temp_file.name)
                 if 'race_id' in df_info.columns:
                     existing_ids.update(df_info['race_id'].astype(str))
-            except Exception as e:
-                print(f"Error reading {info_path}: {e}")
-        
-        # race_result_consolidated.csvから取得
-        if os.path.exists(result_path):
-            try:
-                df_result = pd.read_csv(result_path)
+                
+                # 一時ファイルを削除
+                os.unlink(temp_file.name)
+            
+            # race_result_formatted.csvの確認
+            result_bucket = self.storage_client.bucket('nk_race_result')
+            result_blob = result_bucket.blob('race_result_formatted.csv')
+            
+            if result_blob.exists():
+                # 一時ファイルにダウンロード
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                    result_blob.download_to_file(temp_file)
+                
+                # CSVを読み込み
+                df_result = pd.read_csv(temp_file.name)
                 if 'race_id' in df_result.columns:
                     existing_ids.update(df_result['race_id'].astype(str))
-            except Exception as e:
-                print(f"Error reading {result_path}: {e}")
+                
+                # 一時ファイルを削除
+                os.unlink(temp_file.name)
+            
+        except Exception as e:
+            print(f"Error reading existing race IDs from GCS: {e}")
         
         return existing_ids
 
-    def get_last_processed_position(self, output_dir):
+    def get_last_processed_position(self):
         """
-        最後に処理したレースの位置を特定
+        GCSから最後に処理したレースの位置を特定
         Returns:
             tuple: (year, place_code, kai, day) または None
         """
-        info_path = os.path.join(output_dir, 'race_info_consolidated.csv')
-        result_path = os.path.join(output_dir, 'race_result_consolidated.csv')
-        
         last_race_id = None
         
-        # 両方のファイルから最新のレースIDを取得
-        for path in [info_path, result_path]:
-            if os.path.exists(path):
-                try:
-                    df = pd.read_csv(path)
+        try:
+            # 両方のファイルをチェック
+            for bucket_name, blob_name in [('nk_race_info', 'race_info_formatted.csv'),
+                                         ('nk_race_result', 'race_result_formatted.csv')]:
+                bucket = self.storage_client.bucket(bucket_name)
+                blob = bucket.blob(blob_name)
+                
+                if blob.exists():
+                    # 一時ファイルにダウンロード
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                        blob.download_to_file(temp_file)
+                    
+                    # CSVを読み込み
+                    df = pd.read_csv(temp_file.name)
                     if 'race_id' in df.columns and not df['race_id'].empty:
                         # 数値として最大のレースIDを取得
                         current_last_id = str(max(df['race_id'].astype(str).astype(int)))
                         if last_race_id is None or int(current_last_id) > int(last_race_id):
                             last_race_id = current_last_id
-                except Exception as e:
-                    print(f"Error reading {path}: {e}")
-        
-        if last_race_id:
-            # レースIDを分解（例: 202401010102 → 2024, 01, 01, 01）
-            year = last_race_id[:4]
-            place = last_race_id[4:6]
-            kai = last_race_id[6:8]
-            day = last_race_id[8:10]
-            return int(year), place, int(kai), int(day)
+                    
+                    # 一時ファイルを削除
+                    os.unlink(temp_file.name)
+            
+            if last_race_id:
+                # レースIDを分解（例: 202401010102 → 2024, 01, 01, 01）
+                year = last_race_id[:4]
+                place = last_race_id[4:6]
+                kai = last_race_id[6:8]
+                day = last_race_id[8:10]
+                return int(year), place, int(kai), int(day)
+            
+        except Exception as e:
+            print(f"Error getting last processed position from GCS: {e}")
         
         return None
 
-def main():
-    scraper = NetkeibaRaceScraper()
-    
-    # 出力パスの設定
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    output_dir = os.path.join(script_dir, 'results')
-    
-    # 既存のレースIDを取得
-    existing_race_ids = scraper.get_existing_race_ids(output_dir)
-    print(f"Found {len(existing_race_ids)} existing race records")
-    
-    # 最後に処理した位置を取得
-    last_position = scraper.get_last_processed_position(output_dir)
-    
-    # 開始年と終了年の設定
-    start_year = 2015
-    end_year = datetime.now().year
-    
-    if last_position:
-        last_year, last_place, last_kai, last_day = last_position
-        start_year = last_year
-        print(f"Resuming from year {start_year}, place {last_place}, kai {last_kai}, day {last_day}")
-    
-    print(f"Scraping races from {start_year} to {end_year}")
-    
-    # 競馬場コード
-    place_codes = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
-    
-    # 開始年から現在の年まで
-    for year in range(start_year, end_year + 1):
-        jst_now = datetime.now(timezone(timedelta(hours=9)))
-        print(f"\n[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Starting scraping for {year}年")
-        
-        # 競馬場ごとに処理
-        for place in place_codes:
-            # 最後の位置から再開（前の年は全てスキップ、同じ年は前の競馬場までスキップ）
-            if last_position:
-                if year == last_year and place <= last_place:
-                    jst_now = datetime.now(timezone(timedelta(hours=9)))
-                    print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Skipping {year}年 競馬場コード: {place} (already processed)")
-                    continue
-            
-            jst_now = datetime.now(timezone(timedelta(hours=9)))
-            print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Processing {year}年 競馬場コード: {place}")
-            
-            place_race_infos = []
-            place_race_results = []
-            
-            # 開催回数（1-12）でループ
-            for kai in range(1, 13):
-                # 最後の位置から再開
-                if last_position and year == last_year and place == last_place and kai < last_kai:
-                    continue
+    def save_consolidated_csv(self, race_infos, race_results):
+        """
+        レース情報と結果をGCSに保存（既存データとマージ）
+        """
+        try:
+            # レース情報の保存
+            if race_infos:
+                info_bucket = self.storage_client.bucket('nk_race_info')
+                info_blob = info_bucket.blob('race_info_formatted.csv')
                 
-                # 開催日（1-20）でループ
-                for day in range(1, 21):
-                    # 最後の位置から再開
-                    if last_position and year == last_year and place == last_place and kai == last_kai and day <= last_day:
-                        continue
-                    
-                    base_race_id = f"{year}{place}{kai:02d}{day:02d}"
-                    first_race_id = f"{base_race_id}01"
-                    
-                    # まず1Rをチェックして開催があるか確認
-                    url = f'https://db.netkeiba.com/race/{first_race_id}'
-                    
-                    try:
-                        response = requests.get(url, headers=scraper.headers)
-                        time.sleep(1)  # 1秒待機
-                        
-                        if response.status_code == 200:
-                            soup = BeautifulSoup(response.text, 'html.parser')
-                            if soup.select_one('.race_table_01'):
-                                print(f"Found races for {base_race_id}")
-                                # その日の全レースを追加（1R-12R）
-                                for race_num in range(1, 13):
-                                    race_id = f"{base_race_id}{race_num:02d}"
-                                    
-                                    # 未取得のレースのみ処理
-                                    if race_id not in existing_race_ids:
-                                        print(f"Scraping race ID: {race_id}")
-                                        race_data = scraper.scrape_race_result(race_id)
-                                        
-                                        if race_data:
-                                            if race_data['race_info']:
-                                                race_info = race_data['race_info']
-                                                race_info['race_id'] = race_id
-                                                place_race_infos.append(race_info)
-                                            
-                                            if race_data['race_results']:
-                                                for result in race_data['race_results']:
-                                                    result['race_id'] = race_id
-                                                    # レース情報をコピー
-                                                    if race_data['race_info']:
-                                                        for key in ['race_name', 'race_date', 'kaisai_kai', 'kaisai_place', 
-                                                                  'kaisai_nichime', 'track_type', 'track_direction', 
-                                                                  'track_inout', 'track_distance', 'weather', 
-                                                                  'track_condition', 'start_time', 'race_conditions']:
-                                                            if key in race_data['race_info']:
-                                                                result[key] = race_data['race_info'][key]
-                                                place_race_results.extend(race_data['race_results'])
-                                        
-                                        # レース間に3秒待機
-                                        time.sleep(3)
-                                        
-                                        # 処理済みのレースIDを追加
-                                        existing_race_ids.add(race_id)
-                            else:
-                                continue
-                        else:
-                            continue
-                    
-                    except Exception as e:
-                        print(f"Error checking {first_race_id}: {str(e)}")
-                        continue
+                df_info = pd.DataFrame(race_infos)
+                
+                # 既存のファイルが存在する場合は読み込んでマージ
+                if info_blob.exists():
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                        info_blob.download_to_file(temp_file)
+                    existing_df = pd.read_csv(temp_file.name)
+                    df_info = pd.concat([existing_df, df_info], ignore_index=True)
+                    df_info = df_info.drop_duplicates(subset=['race_id'], keep='last')
+                    os.unlink(temp_file.name)
+                
+                # 一時ファイルに保存してアップロード
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
+                    df_info.to_csv(temp_file.name, index=False)
+                    info_blob.upload_from_filename(temp_file.name)
+                    os.unlink(temp_file.name)
+                
+                print("Race information uploaded to GCS: gs://nk_race_info/race_info_formatted.csv")
             
-            # 競馬場ごとにファイル保存（データがある場合のみ）
-            if place_race_infos or place_race_results:
-                scraper.save_consolidated_csv(place_race_infos, place_race_results, output_dir)
-                jst_now = datetime.now(timezone(timedelta(hours=9)))
-                print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Saved data for {year}年 競馬場コード: {place}")
+            # レース結果の保存
+            if race_results:
+                result_bucket = self.storage_client.bucket('nk_race_result')
+                result_blob = result_bucket.blob('race_result_formatted.csv')
+                
+                df_results = pd.DataFrame(race_results)
+                
+                # 既存のファイルが存在する場合は読み込んでマージ
+                if result_blob.exists():
+                    with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                        result_blob.download_to_file(temp_file)
+                    existing_df = pd.read_csv(temp_file.name)
+                    df_results = pd.concat([existing_df, df_results], ignore_index=True)
+                    if '馬番' in df_results.columns:
+                        df_results = df_results.drop_duplicates(subset=['race_id', '馬番'], keep='last')
+                    os.unlink(temp_file.name)
+                
+                # 一時ファイルに保存してアップロード
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
+                    df_results.to_csv(temp_file.name, index=False)
+                    result_blob.upload_from_filename(temp_file.name)
+                    os.unlink(temp_file.name)
+                
+                print("Race results uploaded to GCS: gs://nk_race_result/race_result_formatted.csv")
             
-            # 競馬場間に30秒待機
-            jst_now = datetime.now(timezone(timedelta(hours=9)))
-            print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Waiting 30 seconds before processing next place...")
-            time.sleep(30)
-        
-        # 年間の処理が終わるごとに60秒待機
-        jst_now = datetime.now(timezone(timedelta(hours=9)))
-        print(f"[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Waiting 60 seconds before processing next year...")
-        time.sleep(60)
+        except Exception as e:
+            print(f"Error saving to GCS: {str(e)}")
+            raise
 
-if __name__ == "__main__":
-    main()
+# Cloud Functions用のエントリーポイント
+@functions_framework.http
+def scrape_races(request):
+    """
+    HTTP Cloud Functions用のエントリーポイント
+    """
+    try:
+        # リクエストパラメータの取得
+        request_json = request.get_json(silent=True)
+        
+        if request_json and 'year' in request_json:
+            year = request_json['year']
+            place = request_json.get('place', None)
+            kai = request_json.get('kai', None)
+            day = request_json.get('day', None)
+        else:
+            # デフォルト値（当日の処理）
+            year = datetime.now().year
+            place = None
+            kai = None
+            day = None
+        
+        scraper = NetkeibaRaceScraper()
+        
+        # 特定の日付のレースをスクレイピング
+        if place and kai and day:
+            base_race_id = f"{year}{place}{kai:02d}{day:02d}"
+            race_infos = []
+            race_results = []
+            
+            for race_num in range(1, 13):
+                race_id = f"{base_race_id}{race_num:02d}"
+                race_data = scraper.scrape_race_result(race_id)
+                
+                if race_data:
+                    if race_data['race_info']:
+                        race_data['race_info']['race_id'] = race_id
+                        race_infos.append(race_data['race_info'])
+                    
+                    if race_data['race_results']:
+                        for result in race_data['race_results']:
+                            result['race_id'] = race_id
+                        race_results.extend(race_data['race_results'])
+                
+                time.sleep(1)  # レート制限対策
+            
+            if race_infos or race_results:
+                scraper.save_consolidated_csv(race_infos, race_results)
+        
+        return {'status': 'success', 'message': 'Scraping completed'}
+        
+    except Exception as e:
+        error_message = str(e)
+        print(f"Error in scrape_races: {error_message}")
+        return {'status': 'error', 'message': error_message}, 500
