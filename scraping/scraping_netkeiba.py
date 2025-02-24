@@ -147,12 +147,31 @@ class NetkeibaRaceScraper:
         # タイムスタンプの生成
         if 'race_date' in race_info and 'start_time' in race_info:
             try:
-                # 既に標準形式になっているのでそのまま結合
-                datetime_str = f"{race_info['race_date']} {race_info['start_time']}"
-                race_info['timestamp'] = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+                # 時刻を:00を付けて秒まで統一
+                time_parts = race_info['start_time'].split(':')
+                if len(time_parts) == 1:
+                    race_info['start_time'] = f"{time_parts[0]}:00:00"
+                elif len(time_parts) == 2:
+                    race_info['start_time'] = f"{race_info['start_time']}:00"
                 
-            except ValueError as e:
+                datetime_str = f"{race_info['race_date']} {race_info['start_time']}"
+                try:
+                    race_info['timestamp'] = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    # 時刻フォーマットが異なる場合は、時刻部分のみを抽出して処理
+                    time_match = re.search(r'(\d{1,2}):(\d{2})', race_info['start_time'])
+                    if time_match:
+                        hour, minute = time_match.groups()
+                        race_info['start_time'] = f"{hour.zfill(2)}:{minute}:00"
+                        datetime_str = f"{race_info['race_date']} {race_info['start_time']}"
+                        race_info['timestamp'] = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        print(f"Error creating timestamp: Invalid time format - {race_info['start_time']}")
+                        race_info['timestamp'] = None
+                
+            except Exception as e:
                 print(f"Error creating timestamp: {e}")
+                race_info['timestamp'] = None
         
         # start_timeの処理を修正（HH:MM:SS形式に統一）
         if 'start_time' in race_info and race_info['start_time']:
