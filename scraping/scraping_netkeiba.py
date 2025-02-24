@@ -315,9 +315,11 @@ class NetkeibaRaceScraper:
         
         return results
 
-    def get_existing_race_ids(self):
+    def get_existing_race_ids(self, target_year=None):
         """
         GCSの既存のCSVファイルから取得済みのレースIDを取得
+        Args:
+            target_year (int, optional): 指定された年のレースIDのみを取得
         """
         existing_ids = set()
         
@@ -327,16 +329,14 @@ class NetkeibaRaceScraper:
             info_blob = info_bucket.blob('race_info_formatted.csv')
             
             if info_blob.exists():
-                # 一時ファイルにダウンロード
                 with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
                     info_blob.download_to_file(temp_file)
-                
-                # CSVを読み込み
                 df_info = pd.read_csv(temp_file.name)
                 if 'race_id' in df_info.columns:
-                    existing_ids.update(df_info['race_id'].astype(str))
-                
-                # 一時ファイルを削除
+                    df_info['race_id'] = df_info['race_id'].astype(str)
+                    if target_year:
+                        df_info = df_info[df_info['race_id'].str[:4] == str(target_year)]
+                    existing_ids.update(df_info['race_id'])
                 os.unlink(temp_file.name)
             
             # race_result_formatted.csvの確認
@@ -344,16 +344,14 @@ class NetkeibaRaceScraper:
             result_blob = result_bucket.blob('race_result_formatted.csv')
             
             if result_blob.exists():
-                # 一時ファイルにダウンロード
                 with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
                     result_blob.download_to_file(temp_file)
-                
-                # CSVを読み込み
                 df_result = pd.read_csv(temp_file.name)
                 if 'race_id' in df_result.columns:
-                    existing_ids.update(df_result['race_id'].astype(str))
-                
-                # 一時ファイルを削除
+                    df_result['race_id'] = df_result['race_id'].astype(str)
+                    if target_year:
+                        df_result = df_result[df_result['race_id'].str[:4] == str(target_year)]
+                    existing_ids.update(df_result['race_id'])
                 os.unlink(temp_file.name)
             
         except Exception as e:
@@ -363,36 +361,45 @@ class NetkeibaRaceScraper:
 
     def get_last_processed_position(self):
         """
-        GCSから最後に処理したレースの位置を特定
+        GCSから最後に処理したレースの位置を特定（race_infoとrace_result両方に存在する最後のレースIDを取得）
         Returns:
             tuple: (year, place_code, kai, day) または None
         """
-        last_race_id = None
+        info_race_ids = set()
+        result_race_ids = set()
         
         try:
-            # 両方のファイルをチェック
-            for bucket_name, blob_name in [('nk_race_info', 'race_info_formatted.csv'),
-                                         ('nk_race_result', 'race_result_formatted.csv')]:
-                bucket = self.storage_client.bucket(bucket_name)
-                blob = bucket.blob(blob_name)
-                
-                if blob.exists():
-                    # 一時ファイルにダウンロード
-                    with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
-                        blob.download_to_file(temp_file)
-                    
-                    # CSVを読み込み
-                    df = pd.read_csv(temp_file.name)
-                    if 'race_id' in df.columns and not df['race_id'].empty:
-                        # 数値として最大のレースIDを取得
-                        current_last_id = str(max(df['race_id'].astype(str).astype(int)))
-                        if last_race_id is None or int(current_last_id) > int(last_race_id):
-                            last_race_id = current_last_id
-                    
-                    # 一時ファイルを削除
-                    os.unlink(temp_file.name)
+            # race_info_formatted.csvの確認
+            info_bucket = self.storage_client.bucket('nk_race_info')
+            info_blob = info_bucket.blob('race_info_formatted.csv')
             
-            if last_race_id:
+            if info_blob.exists():
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                    info_blob.download_to_file(temp_file)
+                df_info = pd.read_csv(temp_file.name)
+                if 'race_id' in df_info.columns and not df_info['race_id'].empty:
+                    info_race_ids = set(df_info['race_id'].astype(str))
+                os.unlink(temp_file.name)
+            
+            # race_result_formatted.csvの確認
+            result_bucket = self.storage_client.bucket('nk_race_result')
+            result_blob = result_bucket.blob('race_result_formatted.csv')
+            
+            if result_blob.exists():
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                    result_blob.download_to_file(temp_file)
+                df_result = pd.read_csv(temp_file.name)
+                if 'race_id' in df_result.columns and not df_result['race_id'].empty:
+                    result_race_ids = set(df_result['race_id'].astype(str))
+                os.unlink(temp_file.name)
+            
+            # 両方のファイルに存在するレースIDを取得
+            common_race_ids = info_race_ids.intersection(result_race_ids)
+            
+            if common_race_ids:
+                # 最大のレースIDを取得
+                last_race_id = max(common_race_ids)
+                
                 # レースIDを分解（例: 202401010102 → 2024, 01, 01, 01）
                 year = last_race_id[:4]
                 place = last_race_id[4:6]
@@ -416,14 +423,18 @@ class NetkeibaRaceScraper:
                 info_blob = info_bucket.blob('race_info_formatted.csv')
                 
                 df_info = pd.DataFrame(race_infos)
+                df_info['race_id'] = df_info['race_id'].astype(str)
                 
                 # 既存のファイルが存在する場合は読み込んでマージ
                 if info_blob.exists():
                     with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
                         info_blob.download_to_file(temp_file)
                     existing_df = pd.read_csv(temp_file.name)
+                    existing_df['race_id'] = existing_df['race_id'].astype(str)
+                    
+                    # 既存のデータを削除して新しいデータで上書き
+                    existing_df = existing_df[~existing_df['race_id'].isin(df_info['race_id'])]
                     df_info = pd.concat([existing_df, df_info], ignore_index=True)
-                    df_info = df_info.drop_duplicates(subset=['race_id'], keep='last')
                     os.unlink(temp_file.name)
                 
                 # 一時ファイルに保存してアップロード
@@ -432,7 +443,7 @@ class NetkeibaRaceScraper:
                     info_blob.upload_from_filename(temp_file.name)
                     os.unlink(temp_file.name)
                 
-                print("Race information uploaded to GCS: gs://nk_race_info/race_info_formatted.csv")
+                print(f"Saved {len(race_infos)} race info records")
             
             # レース結果の保存
             if race_results:
@@ -440,15 +451,23 @@ class NetkeibaRaceScraper:
                 result_blob = result_bucket.blob('race_result_formatted.csv')
                 
                 df_results = pd.DataFrame(race_results)
+                df_results['race_id'] = df_results['race_id'].astype(str)
                 
                 # 既存のファイルが存在する場合は読み込んでマージ
                 if result_blob.exists():
                     with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
                         result_blob.download_to_file(temp_file)
                     existing_df = pd.read_csv(temp_file.name)
-                    df_results = pd.concat([existing_df, df_results], ignore_index=True)
+                    existing_df['race_id'] = existing_df['race_id'].astype(str)
+                    
+                    # 既存のデータを削除して新しいデータで上書き
                     if '馬番' in df_results.columns:
-                        df_results = df_results.drop_duplicates(subset=['race_id', '馬番'], keep='last')
+                        existing_df = existing_df[~((existing_df['race_id'].isin(df_results['race_id'])) & 
+                                                  (existing_df['馬番'].isin(df_results['馬番'])))]
+                    else:
+                        existing_df = existing_df[~existing_df['race_id'].isin(df_results['race_id'])]
+                    
+                    df_results = pd.concat([existing_df, df_results], ignore_index=True)
                     os.unlink(temp_file.name)
                 
                 # 一時ファイルに保存してアップロード
@@ -457,7 +476,7 @@ class NetkeibaRaceScraper:
                     result_blob.upload_from_filename(temp_file.name)
                     os.unlink(temp_file.name)
                 
-                print("Race results uploaded to GCS: gs://nk_race_result/race_result_formatted.csv")
+                print(f"Saved {len(race_results)} race result records")
             
         except Exception as e:
             print(f"Error saving to GCS: {str(e)}")
@@ -474,17 +493,21 @@ class NetkeibaRaceScraper:
         Returns:
             dict: スクレイピング結果のステータス
         """
+        start_time = time.time()
         try:
-            # 既存のレースIDを取得
-            existing_race_ids = self.get_existing_race_ids()
-            print(f"Found {len(existing_race_ids)} existing race records")
+            print("Starting race processing...")
             
-            # 最後に処理した位置を取得（ログ表示用）
+            # 既存のレースIDを取得（指定された年のみ）
+            print("Fetching existing race IDs...")
+            fetch_start = time.time()
+            existing_race_ids = self.get_existing_race_ids(year)
+            print(f"Fetched existing race IDs in {time.time() - fetch_start:.2f} seconds")
+            
+            # 最後に処理した位置を取得
             last_position = self.get_last_processed_position()
             if last_position:
-                print(f"Last processed position: Year={last_position[0]}, Place={last_position[1]}, Kai={last_position[2]}, Day={last_position[3]}")
-            else:
-                print("No last processed position found")
+                last_year, last_place, last_kai, last_day = last_position
+                print(f"Last processed position: Year={last_year}, Place={last_place}, Kai={last_kai}, Day={last_day}")
             
             # 年の設定
             current_year = datetime.now().year
@@ -498,14 +521,16 @@ class NetkeibaRaceScraper:
             
             # 特定の日付が指定されている場合
             if all([year, place, kai, day]):
-                return self._process_specific_date(year, place, kai, day, existing_race_ids)
+                result = self._process_specific_date(year, place, kai, day, existing_race_ids)
+            else:
+                # 年間データを処理
+                for year in range(start_year, end_year + 1):
+                    result = self._process_yearly_data(year, existing_race_ids, last_position)
+                    if result['status'] == 'error':
+                        return result
             
-            # 年間データを処理
-            for year in range(start_year, end_year + 1):
-                result = self._process_yearly_data(year, existing_race_ids, None)  # last_positionをNoneに設定
-                if result['status'] == 'error':
-                    return result
-            
+            total_time = time.time() - start_time
+            print(f"\nTotal processing time: {total_time:.2f} seconds")
             return {'status': 'success', 'message': f'Processed all races from {start_year} to {end_year}'}
             
         except Exception as e:
@@ -545,106 +570,123 @@ class NetkeibaRaceScraper:
 
     def _process_yearly_data(self, year, existing_race_ids, last_position):
         """年間データを処理"""
+        year_start_time = time.time()
         place_codes = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
+        start_kai = 1
+        start_day = 1
+        start_race = 1
         
-        # 最後に処理した位置を取得
-        if last_position:
-            last_year, last_place, last_kai, last_day = last_position
-            if year < last_year:
-                print(f"Skipping year {year} as it's before last processed year {last_year}")
-                return {'status': 'skip', 'message': f'Year {year} already processed'}
+        # race_infoとrace_resultの既存データを個別に取得
+        print("\nFetching existing race data...")
+        fetch_start = time.time()
+        info_race_ids = set()
+        result_race_ids = set()
+        
+        try:
+            # race_info_formatted.csvの確認
+            info_bucket = self.storage_client.bucket('nk_race_info')
+            info_blob = info_bucket.blob('race_info_formatted.csv')
+            
+            if info_blob.exists():
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                    info_blob.download_to_file(temp_file)
+                df_info = pd.read_csv(temp_file.name)
+                if 'race_id' in df_info.columns:
+                    df_info['race_id'] = df_info['race_id'].astype(str)
+                    info_race_ids = set(df_info[df_info['race_id'].str[:4] == str(year)]['race_id'])
+                os.unlink(temp_file.name)
+            
+            # race_result_formatted.csvの確認
+            result_bucket = self.storage_client.bucket('nk_race_result')
+            result_blob = result_bucket.blob('race_result_formatted.csv')
+            
+            if result_blob.exists():
+                with tempfile.NamedTemporaryFile(mode='wb', delete=False) as temp_file:
+                    result_blob.download_to_file(temp_file)
+                df_result = pd.read_csv(temp_file.name)
+                if 'race_id' in df_result.columns:
+                    df_result['race_id'] = df_result['race_id'].astype(str)
+                    result_race_ids = set(df_result[df_result['race_id'].str[:4] == str(year)]['race_id'])
+                os.unlink(temp_file.name)
+        
+        except Exception as e:
+            print(f"Error reading existing race IDs: {e}")
+            info_race_ids = set()
+            result_race_ids = set()
+        
+        print(f"Fetched existing race data in {time.time() - fetch_start:.2f} seconds")
+        
+        # 片方にしか存在しないレースIDを特定
+        info_only_ids = info_race_ids - result_race_ids
+        result_only_ids = result_race_ids - info_race_ids
+        
+        if info_only_ids or result_only_ids:
+            print(f"Found {len(info_only_ids)} races with only race_info and {len(result_only_ids)} races with only race_result")
         
         jst_now = datetime.now(timezone(timedelta(hours=9)))
-        print(f"\n[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Starting scraping for {year}年")
+        print(f"\n[{jst_now.strftime('%Y-%m-%d %H:%M:%S')} JST] Processing races for {year}年")
         
-        # 最後に処理したレースIDを取得
-        last_race_id = None
-        if existing_race_ids:
-            last_race_id = max(existing_race_ids)
-            if last_race_id and int(last_race_id[:4]) == year:
-                # 同じ年の場合、最後のレースの次から開始
-                start_place = last_race_id[4:6]
-                start_kai = int(last_race_id[6:8])
-                start_day = int(last_race_id[8:10])
-                start_race = int(last_race_id[10:12])
-                
-                # 次のレースを設定
-                if start_race < 12:
-                    start_race += 1
-                else:
-                    start_race = 1
-                    if start_day < 20:
-                        start_day += 1
-                    else:
-                        start_day = 1
-                        if start_kai < 12:
-                            start_kai += 1
-                        else:
-                            start_kai = 1
-                            # 次の競馬場へ
-                            next_place = str(int(start_place) + 1).zfill(2)
-                            if int(next_place) > 10:
-                                return {'status': 'success', 'message': f'Completed all races for {year}'}
-                            start_place = next_place
-                
-                # 開始位置以前の競馬場をスキップ
-                place_codes = [p for p in place_codes if int(p) >= int(start_place)]
-            else:
-                start_kai = 1
-                start_day = 1
-                start_race = 1
-        else:
-            start_kai = 1
-            start_day = 1
-            start_race = 1
+        total_requests = 0
+        total_races_processed = 0
         
         for place in place_codes:
+            place_start_time = time.time()
             race_infos = []
             race_results = []
             
             # 開始位置の設定
-            kai_range = range(start_kai if place == start_place else 1, 13)
-            for kai in kai_range:
-                day_range = range(start_day if place == start_place and kai == start_kai else 1, 21)
-                for day in day_range:
+            current_kai = start_kai
+            for kai in range(current_kai, 13):
+                current_day = start_day if kai == start_kai else 1
+                for day in range(current_day, 21):
                     base_race_id = f"{year}{place}{kai:02d}{day:02d}"
                     first_race_id = f"{base_race_id}01"
                     
                     try:
+                        request_start = time.time()
                         response = requests.get(f'https://db.netkeiba.com/race/{first_race_id}', headers=self.headers)
+                        total_requests += 1
                         time.sleep(1)
                         
                         if response.status_code == 200:
                             soup = BeautifulSoup(response.text, 'html.parser')
                             if soup.select_one('.race_table_01'):
-                                print(f"Found races for {base_race_id}")
+                                print(f"Processing races for {base_race_id} (Request took {time.time() - request_start:.2f}s)")
                                 
-                                race_range = range(start_race if place == start_place and kai == start_kai and day == start_day else 1, 13)
-                                for race_num in race_range:
+                                current_race = start_race if kai == start_kai and day == start_day else 1
+                                for race_num in range(current_race, 13):
                                     race_id = f"{base_race_id}{race_num:02d}"
                                     
-                                    if race_id not in existing_race_ids:
-                                        print(f"Scraping race ID: {race_id}")
+                                    # レースIDが存在しない場合、または片方のファイルにしか存在しない場合にスクレイピング
+                                    if race_id not in existing_race_ids or race_id in info_only_ids or race_id in result_only_ids:
+                                        race_start = time.time()
                                         race_data = self.scrape_race_result(race_id)
+                                        total_requests += 1
                                         
                                         if race_data:
-                                            if race_data['race_info']:
+                                            total_races_processed += 1
+                                            # race_infoの処理
+                                            if race_data['race_info'] and (race_id not in info_race_ids or race_id in result_only_ids):
                                                 race_info = race_data['race_info']
                                                 race_info['race_id'] = race_id
                                                 race_infos.append(race_info)
                                             
-                                            if race_data['race_results']:
+                                            # race_resultの処理
+                                            if race_data['race_results'] and (race_id not in result_race_ids or race_id in info_only_ids):
                                                 for result in race_data['race_results']:
                                                     result['race_id'] = race_id
                                                 race_results.extend(race_data['race_results'])
+                                            
+                                            # データを保存
+                                            if race_infos or race_results:
+                                                save_start = time.time()
+                                                self.save_consolidated_csv(race_infos, race_results)
+                                                print(f"Saved data in {time.time() - save_start:.2f} seconds")
+                                                race_infos = []
+                                                race_results = []
                                         
+                                        print(f"Processed race {race_id} in {time.time() - race_start:.2f} seconds")
                                         time.sleep(3)
-                                        existing_race_ids.add(race_id)
-                                    else:
-                                        print(f"Skipping race ID {race_id} as it already exists in the database")
-                                
-                                # 最初のレース以降は通常の開始位置から
-                                start_race = 1
                 
                     except Exception as e:
                         print(f"Error checking {first_race_id}: {str(e)}")
@@ -655,12 +697,17 @@ class NetkeibaRaceScraper:
             
             # 最初の開催回以降は通常の開始位置から
             start_kai = 1
+            start_race = 1
             
-            if race_infos or race_results:
-                self.save_consolidated_csv(race_infos, race_results)
-                print(f"Saved data for {year}年 競馬場コード: {place}")
-            
+            print(f"\nCompleted processing place {place} in {time.time() - place_start_time:.2f} seconds")
             time.sleep(30)  # 競馬場間に30秒待機
+        
+        total_time = time.time() - year_start_time
+        print(f"\nYear {year} processing completed:")
+        print(f"Total time: {total_time:.2f} seconds")
+        print(f"Total requests made: {total_requests}")
+        print(f"Total races processed: {total_races_processed}")
+        print(f"Average time per race: {total_time/total_races_processed:.2f} seconds (if races were processed)")
         
         return {'status': 'success', 'message': f'Processed all races for {year}'}
 
