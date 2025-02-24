@@ -6,3 +6,4 @@ scraping/results/
 .DS_Store
 .gcloudignore
 .conda/
+venv/
